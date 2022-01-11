@@ -82,9 +82,6 @@ type machine struct {
 
 	// nextID is the next vCPU ID.
 	nextID uint32
-
-	// machineArchState is the architecture-specific state.
-	machineArchState
 }
 
 const (
@@ -451,15 +448,6 @@ func (m *machine) Get() *vCPU {
 				c.loadSegments(tid)
 				return c
 			}
-		}
-
-		// Get a new vCPU (maybe).
-		if c := m.getNewVCPU(); c != nil {
-			c.lock()
-			m.vCPUsByTID[tid] = c
-			m.mu.Unlock()
-			c.loadSegments(tid)
-			return c
 		}
 
 		// Scan for something not in user mode.

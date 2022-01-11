@@ -53,12 +53,12 @@ func (m *machine) initArchState() error {
 	// The reason for the difference is that ARM64 and x86_64 have different KVM timer mechanisms.
 	// If we create vCPU dynamically on ARM64, the timer for vCPU would mess up for a short time.
 	// For more detail, please refer to https://github.com/google/gvisor/issues/5739
-	m.initialvCPUs = make(map[int]*vCPU)
 	m.mu.Lock()
-	for int(m.nextID) < m.maxVCPUs-1 {
+	for int(m.nextID) < m.maxVCPUs {
 		c := m.newVCPU()
-		c.state = 0
-		m.initialvCPUs[c.id] = c
+		// Add a new vcpu to the pool with a fake thread ID.
+		// machine.Get() will take it.
+		m.vCPUsByTID[^uint64(m.nextID)] = c
 	}
 	m.mu.Unlock()
 	return nil
