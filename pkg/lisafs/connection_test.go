@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/lisafs"
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/unet"
@@ -53,9 +54,13 @@ func (fd *testControlFD) FD() *lisafs.ControlFD {
 	return &fd.ControlFD
 }
 
+func (fd *testControlFD) Close() {}
+
 // Mount implements lisafs.Mount.
-func (s *testServer) Mount(c *lisafs.Connection, mountPath string) (lisafs.ControlFDImpl, lisafs.Inode, error) {
-	return &testControlFD{}, lisafs.Inode{ControlFD: 1}, nil
+func (s *testServer) Mount(c *lisafs.Connection, mountNode *lisafs.Node) (*lisafs.ControlFD, linux.Statx, error) {
+	dummyRoot := &testControlFD{}
+	dummyRoot.Init(c, mountNode, linux.ModeDirectory, dummyRoot)
+	return dummyRoot.FD(), linux.Statx{Mode: linux.S_IFDIR}, nil
 }
 
 // MaxMessageSize implements lisafs.MaxMessageSize.
@@ -80,15 +85,17 @@ func runServerClient(t testing.TB, clientFn func(c *lisafs.Client)) {
 	}
 
 	ts := &testServer{}
-	ts.Server.InitTestOnly(ts, handlers[:])
-	conn, err := ts.CreateConnection(serverSocket, false /* readonly */)
+	ts.Server.Init(ts, lisafs.ServerOpts{})
+	ts.Server.SetHandlers(handlers[:])
+
+	conn, err := ts.CreateConnection(serverSocket, "/" /* mountPath */, false /* readonly */)
 	if err != nil {
 		t.Fatalf("starting connection failed: %v", err)
 		return
 	}
 	ts.StartConnection(conn)
 
-	c, _, err := lisafs.NewClient(clientSocket, "/")
+	c, _, err := lisafs.NewClient(clientSocket)
 	if err != nil {
 		t.Fatalf("client creation failed: %v", err)
 	}
@@ -97,6 +104,7 @@ func runServerClient(t testing.TB, clientFn func(c *lisafs.Client)) {
 
 	c.Close() // This should trigger client and server shutdown.
 	ts.Wait()
+	ts.Server.Destroy()
 }
 
 // TestStartUp tests that the server and client can be started up correctly.

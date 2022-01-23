@@ -30,6 +30,8 @@ import (
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/lisafs"
+	"gvisor.dev/gvisor/pkg/refs"
+	"gvisor.dev/gvisor/pkg/refsvfs2"
 	"gvisor.dev/gvisor/pkg/unet"
 )
 
@@ -49,9 +51,11 @@ type Tester interface {
 
 // RunAllLocalFSTests runs all local FS tests as subtests.
 func RunAllLocalFSTests(t *testing.T, tester Tester) {
+	refs.SetLeakMode(refs.LeaksPanic)
 	for name, testFn := range localFSTests {
 		t.Run(name, func(t *testing.T) {
 			runServerClient(t, tester, testFn)
+			refsvfs2.DoLeakCheck()
 		})
 	}
 }
@@ -81,7 +85,7 @@ func runServerClient(t *testing.T, tester Tester, testFn testFunc) {
 	}
 	defer os.RemoveAll(mountPath)
 
-	// fsgofer should run with a umask of 0, because we want to preserve file
+	// server should run with a umask of 0, because we want to preserve file
 	// modes exactly for testing purposes.
 	unix.Umask(0)
 
@@ -91,14 +95,14 @@ func runServerClient(t *testing.T, tester Tester, testFn testFunc) {
 	}
 
 	server := tester.NewServer(t)
-	conn, err := server.CreateConnection(serverSocket, false /* readonly */)
+	conn, err := server.CreateConnection(serverSocket, mountPath, false /* readonly */)
 	if err != nil {
 		t.Fatalf("starting connection failed: %v", err)
 		return
 	}
 	server.StartConnection(conn)
 
-	c, root, err := lisafs.NewClient(clientSocket, mountPath)
+	c, root, err := lisafs.NewClient(clientSocket)
 	if err != nil {
 		t.Fatalf("client creation failed: %v", err)
 	}
@@ -114,6 +118,7 @@ func runServerClient(t *testing.T, tester Tester, testFn testFunc) {
 
 	c.Close() // This should trigger client and server shutdown.
 	server.Wait()
+	server.Destroy()
 }
 
 func closeFD(ctx context.Context, t testing.TB, fdLisa lisafs.ClientFD) {
@@ -545,7 +550,7 @@ func testRename(ctx context.Context, t *testing.T, tester Tester, root lisafs.Cl
 	defer closeFD(ctx, t, tempDir)
 
 	// Move tempFile into tempDir.
-	if err := tempFile.RenameTo(ctx, tempDir.ID(), "movedFile"); err != nil {
+	if err := root.RenameAt(ctx, name, tempDir.ID(), "movedFile"); err != nil {
 		t.Fatalf("rename failed: %v", err)
 	}
 
