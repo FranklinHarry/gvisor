@@ -39,6 +39,7 @@ package gofer
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -350,7 +351,11 @@ func (fstype FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 	fsopts.aname = "/"
 	if aname, ok := mopts[moptAname]; ok {
 		delete(mopts, moptAname)
-		fsopts.aname = aname
+		if !path.IsAbs(aname) {
+			ctx.Warningf("gofer.FilesystemType.GetFilesystem: aname is not absolute: %s=%s", moptAname, aname)
+			return nil, nil, linuxerr.EINVAL
+		}
+		fsopts.aname = path.Clean(aname)
 	}
 
 	// Parse the cache policy. For historical reasons, this defaults to the
@@ -497,12 +502,12 @@ func (fstype FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virt
 func (fs *filesystem) initClientAndRoot(ctx context.Context) error {
 	var err error
 	if fs.opts.lisaEnabled {
-		var rootInode *lisafs.Inode
+		var rootInode lisafs.Inode
 		rootInode, err = fs.initClientLisa(ctx)
 		if err != nil {
 			return err
 		}
-		fs.root, err = fs.newDentryLisa(ctx, rootInode)
+		fs.root, err = fs.newDentryLisa(ctx, &rootInode)
 		if err != nil {
 			fs.clientLisa.CloseFDBatched(ctx, rootInode.ControlFD)
 		}
@@ -519,17 +524,47 @@ func (fs *filesystem) initClientAndRoot(ctx context.Context) error {
 	return err
 }
 
-func (fs *filesystem) initClientLisa(ctx context.Context) (*lisafs.Inode, error) {
+func (fs *filesystem) initClientLisa(ctx context.Context) (lisafs.Inode, error) {
 	sock, err := unet.NewSocket(fs.opts.fd)
 	if err != nil {
-		return nil, err
+		return lisafs.Inode{}, err
 	}
 
-	var rootInode *lisafs.Inode
+	var rootInode lisafs.Inode
 	ctx.UninterruptibleSleepStart(false)
-	fs.clientLisa, rootInode, err = lisafs.NewClient(sock, fs.opts.aname)
+	fs.clientLisa, rootInode, err = lisafs.NewClient(sock)
 	ctx.UninterruptibleSleepFinish(false)
-	return rootInode, err
+	if err != nil {
+		return lisafs.Inode{}, err
+	}
+	if fs.opts.aname == "/" {
+		return rootInode, nil
+	}
+
+	// Walk to the attach point from root inode.
+	rootFD := fs.clientLisa.NewFD(rootInode.ControlFD)
+	status, inodes, err := rootFD.WalkMultiple(ctx, strings.Split(fs.opts.aname, "/"))
+	rootFD.CloseBatched(ctx)
+	if err != nil {
+		return lisafs.Inode{}, err
+	}
+
+	// Close all intermediate FDs to the attach point.
+	numInodes := len(inodes)
+	for _, inode := range inodes[:numInodes-1] {
+		curFD := fs.clientLisa.NewFD(inode.ControlFD)
+		curFD.CloseBatched(ctx)
+	}
+
+	switch status {
+	case lisafs.WalkSuccess:
+		return inodes[numInodes-1], nil
+	default:
+		last := fs.clientLisa.NewFD(inodes[numInodes-1].ControlFD)
+		last.CloseBatched(ctx)
+		log.Warningf("initClientLisa failed because walk to attach point %q failed: lisafs.WalkStatus = %v", fs.opts.aname, status)
+		return lisafs.Inode{}, unix.ENOENT
+	}
 }
 
 func (fs *filesystem) initClient(ctx context.Context) (*dentry, error) {

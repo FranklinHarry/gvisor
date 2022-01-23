@@ -81,7 +81,7 @@ func runServerClient(t *testing.T, tester Tester, testFn testFunc) {
 	}
 	defer os.RemoveAll(mountPath)
 
-	// fsgofer should run with a umask of 0, because we want to preserve file
+	// server should run with a umask of 0, because we want to preserve file
 	// modes exactly for testing purposes.
 	unix.Umask(0)
 
@@ -91,14 +91,14 @@ func runServerClient(t *testing.T, tester Tester, testFn testFunc) {
 	}
 
 	server := tester.NewServer(t)
-	conn, err := server.CreateConnection(serverSocket, false /* readonly */)
+	conn, err := server.CreateConnection(serverSocket, mountPath, false /* readonly */)
 	if err != nil {
 		t.Fatalf("starting connection failed: %v", err)
 		return
 	}
 	server.StartConnection(conn)
 
-	c, root, err := lisafs.NewClient(clientSocket, mountPath)
+	c, root, err := lisafs.NewClient(clientSocket)
 	if err != nil {
 		t.Fatalf("client creation failed: %v", err)
 	}
@@ -545,7 +545,7 @@ func testRename(ctx context.Context, t *testing.T, tester Tester, root lisafs.Cl
 	defer closeFD(ctx, t, tempDir)
 
 	// Move tempFile into tempDir.
-	if err := tempFile.RenameTo(ctx, tempDir.ID(), "movedFile"); err != nil {
+	if err := root.RenameAt(ctx, name, tempDir.ID(), "movedFile"); err != nil {
 		t.Fatalf("rename failed: %v", err)
 	}
 

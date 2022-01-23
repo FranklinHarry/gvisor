@@ -72,7 +72,7 @@ type Client struct {
 // the server and creates channels for fast IPC. NewClient takes ownership over
 // the passed socket. On success, it returns the initialized client along with
 // the root Inode.
-func NewClient(sock *unet.Socket, mountPath string) (*Client, *Inode, error) {
+func NewClient(sock *unet.Socket) (*Client, Inode, error) {
 	maxChans := maxChannels()
 	c := &Client{
 		sockComm:          newSockComm(sock),
@@ -97,12 +97,9 @@ func NewClient(sock *unet.Socket, mountPath string) (*Client, *Inode, error) {
 	// Mount RPC below.
 	c.supported = make([]bool, Mount+1)
 	c.supported[Mount] = true
-	mountMsg := MountReq{
-		MountPath: SizedString(mountPath),
-	}
 	var mountResp MountResp
-	if err := c.SndRcvMessage(Mount, uint32(mountMsg.SizeBytes()), mountMsg.MarshalBytes, mountResp.CheckedUnmarshal, nil); err != nil {
-		return nil, nil, err
+	if err := c.SndRcvMessage(Mount, 0, NoopMarshal, mountResp.CheckedUnmarshal, nil); err != nil {
+		return nil, Inode{}, err
 	}
 
 	// Initialize client.
@@ -145,12 +142,12 @@ func NewClient(sock *unet.Socket, mountPath string) (*Client, *Inode, error) {
 	for _, channelErr := range channelErrs {
 		// Return the first non-nil channel creation error.
 		if channelErr != nil {
-			return nil, nil, channelErr
+			return nil, Inode{}, channelErr
 		}
 	}
 	cu.Release()
 
-	return c, &mountResp.Root, nil
+	return c, mountResp.Root, nil
 }
 
 func (c *Client) watchdog() {
