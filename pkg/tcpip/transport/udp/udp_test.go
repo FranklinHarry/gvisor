@@ -44,6 +44,7 @@ import (
 
 const (
 	testTOS              = 0x80
+	testTTL              = 65
 	arbitraryPayloadSize = 30
 )
 
@@ -57,115 +58,18 @@ func newRandomPayload(size int) []byte {
 	return b
 }
 
-func buildV4Packet(payload []byte, h context.Header4Tuple, badChecksum bool) buffer.View {
-	// Allocate a buffer for data and headers.
-	buf := buffer.NewView(header.UDPMinimumSize + header.IPv4MinimumSize + len(payload))
-	payloadStart := len(buf) - len(payload)
-	copy(buf[payloadStart:], payload)
-
-	// Initialize the IP header.
-	ip := header.IPv4(buf)
-	ip.Encode(&header.IPv4Fields{
-		TOS:         testTOS,
-		TotalLength: uint16(len(buf)),
-		TTL:         65,
-		Protocol:    uint8(udp.ProtocolNumber),
-		SrcAddr:     h.Src.Addr,
-		DstAddr:     h.Dst.Addr,
-	})
-	ip.SetChecksum(^ip.CalculateChecksum())
-
-	// Initialize the UDP header.
-	u := header.UDP(buf[header.IPv4MinimumSize:])
-	u.Encode(&header.UDPFields{
-		SrcPort: h.Src.Port,
-		DstPort: h.Dst.Port,
-		Length:  uint16(header.UDPMinimumSize + len(payload)),
-	})
-
-	// Calculate the UDP pseudo-header checksum.
-	xsum := header.PseudoHeaderChecksum(udp.ProtocolNumber, h.Src.Addr, h.Dst.Addr, uint16(len(u)))
-
-	// Calculate the UDP checksum and set it.
-	xsum = header.Checksum(payload, xsum)
-	u.SetChecksum(^u.CalculateChecksum(xsum))
-
-	if badChecksum {
-		// Invalidate the UDP header checksum field, taking care to avoid overflow
-		// to zero, which would disable checksum validation.
-		for {
-			u.SetChecksum(u.Checksum() + 1)
-			if u.Checksum() != 0 {
-				break
-			}
-		}
-	}
-
-	return buf
-}
-
-func buildV6Packet(payload []byte, h context.Header4Tuple, badChecksum bool) buffer.View {
-	// Allocate a buffer for data and headers.
-	buf := buffer.NewView(header.UDPMinimumSize + header.IPv6MinimumSize + len(payload))
-	payloadStart := len(buf) - len(payload)
-	copy(buf[payloadStart:], payload)
-
-	// Initialize the IP header.
-	ip := header.IPv6(buf)
-	ip.Encode(&header.IPv6Fields{
-		TrafficClass:      testTOS,
-		PayloadLength:     uint16(header.UDPMinimumSize + len(payload)),
-		TransportProtocol: udp.ProtocolNumber,
-		HopLimit:          65,
-		SrcAddr:           h.Src.Addr,
-		DstAddr:           h.Dst.Addr,
-	})
-
-	// Initialize the UDP header.
-	u := header.UDP(buf[header.IPv6MinimumSize:])
-	u.Encode(&header.UDPFields{
-		SrcPort: h.Src.Port,
-		DstPort: h.Dst.Port,
-		Length:  uint16(header.UDPMinimumSize + len(payload)),
-	})
-
-	// Calculate the UDP pseudo-header checksum.
-	xsum := header.PseudoHeaderChecksum(udp.ProtocolNumber, h.Src.Addr, h.Dst.Addr, uint16(len(u)))
-
-	// Calculate the UDP checksum and set it.
-	xsum = header.Checksum(payload, xsum)
-	u.SetChecksum(^u.CalculateChecksum(xsum))
-
-	if badChecksum {
-		// Invalidate the UDP header checksum field (Unlike IPv4, zero is a valid
-		// checksum value for IPv6 so no need to avoid it).
-		u := header.UDP(buf[header.IPv6MinimumSize:])
-		u.SetChecksum(u.Checksum() + 1)
-	}
-
-	return buf
-}
-
-func buildPacket(payload []byte, flow context.TestFlow, direction context.PacketDirection, badChecksum bool) buffer.View {
-	h := flow.MakeHeader4Tuple(direction)
-	if flow.IsV4() {
-		return buildV4Packet(payload, h, badChecksum)
-	}
-	return buildV6Packet(payload, h, badChecksum)
-}
-
 func testRead(c *context.Context, flow context.TestFlow, checkers ...checker.ControlMessagesChecker) {
 	c.T.Helper()
 
 	payload := newRandomPayload(arbitraryPayloadSize)
-	c.InjectPacket(flow.NetProto(), buildPacket(payload, flow, context.Incoming, false))
+	c.InjectPacket(flow.NetProto(), context.BuildUDPPacket(payload, flow, context.Incoming, testTOS, testTTL, false))
 	c.ReadFromEndpointExpectSuccess(payload, flow, checkers...)
 }
 
 func testFailingRead(c *context.Context, flow context.TestFlow, expectReadError bool) {
 	c.T.Helper()
 
-	c.InjectPacket(flow.NetProto(), buildPacket(newRandomPayload(arbitraryPayloadSize), flow, context.Incoming, false))
+	c.InjectPacket(flow.NetProto(), context.BuildUDPPacket(newRandomPayload(arbitraryPayloadSize), flow, context.Incoming, testTOS, testTTL, false))
 	if expectReadError {
 		c.ReadFromEndpointExpectError()
 	} else {
@@ -312,7 +216,7 @@ func TestV4ReadOnV6(t *testing.T) {
 	}
 
 	payload := newRandomPayload(arbitraryPayloadSize)
-	buf := buildPacket(payload, context.UnicastV4in6, context.Incoming, false)
+	buf := context.BuildUDPPacket(payload, context.UnicastV4in6, context.Incoming, testTOS, testTTL, false)
 	c.InjectPacket(header.IPv4ProtocolNumber, buf)
 	c.ReadFromEndpointExpectSuccess(payload, context.UnicastV4in6)
 }
@@ -390,7 +294,7 @@ func TestV4ReadSelfSource(t *testing.T) {
 			payload := newRandomPayload(arbitraryPayloadSize)
 			h := context.UnicastV4.MakeHeader4Tuple(context.Incoming)
 			h.Src = h.Dst
-			c.InjectPacket(header.IPv4ProtocolNumber, buildV4Packet(payload, h, false))
+			c.InjectPacket(header.IPv4ProtocolNumber, context.BuildV4UDPPacket(payload, h, testTOS, testTTL, false))
 
 			if got := c.Stack.Stats().IP.InvalidSourceAddressesReceived.Value(); got != tt.wantInvalidSource {
 				t.Errorf("c.Stack.Stats().IP.InvalidSourceAddressesReceived got %d, want %d", got, tt.wantInvalidSource)
@@ -940,112 +844,6 @@ func TestReadIncrementsPacketsReceived(t *testing.T) {
 	}
 }
 
-func TestReadIPPacketInfo(t *testing.T) {
-	tests := []struct {
-		name    string
-		proto   tcpip.NetworkProtocolNumber
-		flow    context.TestFlow
-		checker func(tcpip.NICID) checker.ControlMessagesChecker
-	}{
-		{
-			name:  "IPv4 unicast",
-			proto: header.IPv4ProtocolNumber,
-			flow:  context.UnicastV4,
-			checker: func(id tcpip.NICID) checker.ControlMessagesChecker {
-				return checker.ReceiveIPPacketInfo(tcpip.IPPacketInfo{
-					NIC:             id,
-					LocalAddr:       context.StackAddr,
-					DestinationAddr: context.StackAddr,
-				})
-			},
-		},
-		{
-			name:  "IPv4 multicast",
-			proto: header.IPv4ProtocolNumber,
-			flow:  context.MulticastV4,
-			checker: func(id tcpip.NICID) checker.ControlMessagesChecker {
-				return checker.ReceiveIPPacketInfo(tcpip.IPPacketInfo{
-					NIC: id,
-					// TODO(gvisor.dev/issue/3556): Check for a unicast address.
-					LocalAddr:       context.MulticastAddr,
-					DestinationAddr: context.MulticastAddr,
-				})
-			},
-		},
-		{
-			name:  "IPv4 broadcast",
-			proto: header.IPv4ProtocolNumber,
-			flow:  context.Broadcast,
-			checker: func(id tcpip.NICID) checker.ControlMessagesChecker {
-				return checker.ReceiveIPPacketInfo(tcpip.IPPacketInfo{
-					NIC: id,
-					// TODO(gvisor.dev/issue/3556): Check for a unicast address.
-					LocalAddr:       context.BroadcastAddr,
-					DestinationAddr: context.BroadcastAddr,
-				})
-			},
-		},
-		{
-			name:  "IPv6 unicast",
-			proto: header.IPv6ProtocolNumber,
-			flow:  context.UnicastV6,
-			checker: func(id tcpip.NICID) checker.ControlMessagesChecker {
-				return checker.ReceiveIPv6PacketInfo(tcpip.IPv6PacketInfo{
-					NIC:  id,
-					Addr: context.StackV6Addr,
-				})
-			},
-		},
-		{
-			name:  "IPv6 multicast",
-			proto: header.IPv6ProtocolNumber,
-			flow:  context.MulticastV6,
-			checker: func(id tcpip.NICID) checker.ControlMessagesChecker {
-				return checker.ReceiveIPv6PacketInfo(tcpip.IPv6PacketInfo{
-					NIC:  id,
-					Addr: context.MulticastV6Addr,
-				})
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := context.New(t, []stack.TransportProtocolFactory{udp.NewProtocol, icmp.NewProtocol6, icmp.NewProtocol4})
-			defer c.Cleanup()
-
-			c.CreateEndpoint(test.proto, udp.ProtocolNumber)
-
-			bindAddr := tcpip.FullAddress{Port: context.StackPort}
-			if err := c.EP.Bind(bindAddr); err != nil {
-				t.Fatalf("Bind(%+v): %s", bindAddr, err)
-			}
-
-			if test.flow.IsMulticast() {
-				ifoptSet := tcpip.AddMembershipOption{NIC: context.NICID, MulticastAddr: test.flow.GetMulticastAddr()}
-				if err := c.EP.SetSockOpt(&ifoptSet); err != nil {
-					c.T.Fatalf("SetSockOpt(&%#v): %s:", ifoptSet, err)
-				}
-			}
-
-			switch f := test.flow.NetProto(); f {
-			case header.IPv4ProtocolNumber:
-				c.EP.SocketOptions().SetReceivePacketInfo(true)
-			case header.IPv6ProtocolNumber:
-				c.EP.SocketOptions().SetIPv6ReceivePacketInfo(true)
-			default:
-				t.Fatalf("unhandled protocol number = %d", f)
-			}
-
-			testRead(c, test.flow, test.checker(context.NICID))
-
-			if got := c.Stack.Stats().UDP.PacketsReceived.Value(); got != 1 {
-				t.Fatalf("Read did not increment PacketsReceived: got = %d, want = 1", got)
-			}
-		})
-	}
-}
-
 func TestReadRecvOriginalDstAddr(t *testing.T) {
 	tests := []struct {
 		name                    string
@@ -1341,83 +1139,119 @@ func TestSetTClass(t *testing.T) {
 	}
 }
 
-func TestReceiveTosTClass(t *testing.T) {
-	const RcvTOSOpt = "ReceiveTosOption"
-	const RcvTClassOpt = "ReceiveTClassOption"
+func TestReceiveControlMessage(t *testing.T) {
+	for _, flow := range []context.TestFlow{context.UnicastV4, context.UnicastV6, context.UnicastV6Only, context.MulticastV4, context.MulticastV6, context.MulticastV6Only, context.Broadcast} {
+		t.Run(flow.String(), func(t *testing.T) {
+			for _, test := range []struct {
+				name             string
+				optionProtocol   tcpip.NetworkProtocolNumber
+				getReceiveOption func(tcpip.Endpoint) bool
+				setReceiveOption func(tcpip.Endpoint, bool)
+				presenceChecker  checker.ControlMessagesChecker
+				absenceChecker   checker.ControlMessagesChecker
+			}{
+				{
+					name:             "TOS",
+					optionProtocol:   header.IPv4ProtocolNumber,
+					getReceiveOption: func(ep tcpip.Endpoint) bool { return ep.SocketOptions().GetReceiveTOS() },
+					setReceiveOption: func(ep tcpip.Endpoint, value bool) { ep.SocketOptions().SetReceiveTOS(value) },
+					presenceChecker:  checker.ReceiveTOS(testTOS),
+					absenceChecker:   checker.NoTOSReceived(),
+				},
+				{
+					name:             "TClass",
+					optionProtocol:   header.IPv6ProtocolNumber,
+					getReceiveOption: func(ep tcpip.Endpoint) bool { return ep.SocketOptions().GetReceiveTClass() },
+					setReceiveOption: func(ep tcpip.Endpoint, value bool) { ep.SocketOptions().SetReceiveTClass(value) },
+					presenceChecker:  checker.ReceiveTClass(testTOS),
+					absenceChecker:   checker.NoTClassReceived(),
+				},
+				{
+					name:             "TTL",
+					optionProtocol:   header.IPv4ProtocolNumber,
+					getReceiveOption: func(ep tcpip.Endpoint) bool { return ep.SocketOptions().GetReceiveTTL() },
+					setReceiveOption: func(ep tcpip.Endpoint, value bool) { ep.SocketOptions().SetReceiveTTL(value) },
+					presenceChecker:  checker.ReceiveTTL(testTTL),
+					absenceChecker:   checker.NoTTLReceived(),
+				},
+				{
+					name:             "HopLimit",
+					optionProtocol:   header.IPv6ProtocolNumber,
+					getReceiveOption: func(ep tcpip.Endpoint) bool { return ep.SocketOptions().GetReceiveHopLimit() },
+					setReceiveOption: func(ep tcpip.Endpoint, value bool) { ep.SocketOptions().SetReceiveHopLimit(value) },
+					presenceChecker:  checker.ReceiveHopLimit(testTTL),
+					absenceChecker:   checker.NoHopLimitReceived(),
+				},
+				{
+					name:             "PacketInfo",
+					optionProtocol:   header.IPv4ProtocolNumber,
+					getReceiveOption: func(ep tcpip.Endpoint) bool { return ep.SocketOptions().GetReceivePacketInfo() },
+					setReceiveOption: func(ep tcpip.Endpoint, value bool) { ep.SocketOptions().SetReceivePacketInfo(value) },
+					presenceChecker: func() checker.ControlMessagesChecker {
+						h := flow.MakeHeader4Tuple(context.Incoming)
+						return checker.ReceiveIPPacketInfo(tcpip.IPPacketInfo{
+							NIC: context.NICID,
+							// TODO(https://gvisor.dev/issue/3556): Expect the NIC's address
+							// instead of the header destination address for the LocalAddr
+							// field.
+							LocalAddr:       h.Dst.Addr,
+							DestinationAddr: h.Dst.Addr,
+						})
+					}(),
+					absenceChecker: checker.NoIPPacketInfoReceived(),
+				},
+				{
+					name:             "IPv6PacketInfo",
+					optionProtocol:   header.IPv6ProtocolNumber,
+					getReceiveOption: func(ep tcpip.Endpoint) bool { return ep.SocketOptions().GetIPv6ReceivePacketInfo() },
+					setReceiveOption: func(ep tcpip.Endpoint, value bool) { ep.SocketOptions().SetIPv6ReceivePacketInfo(value) },
+					presenceChecker: func() checker.ControlMessagesChecker {
+						h := flow.MakeHeader4Tuple(context.Incoming)
+						return checker.ReceiveIPv6PacketInfo(tcpip.IPv6PacketInfo{
+							NIC:  context.NICID,
+							Addr: h.Dst.Addr,
+						})
+					}(),
+					absenceChecker: checker.NoIPv6PacketInfoReceived(),
+				},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					c := context.New(t, []stack.TransportProtocolFactory{udp.NewProtocol})
+					defer c.Cleanup()
 
-	testCases := []struct {
-		name  string
-		tests []context.TestFlow
-	}{
-		{
-			name:  RcvTOSOpt,
-			tests: v4PacketFlows[:],
-		},
-		{
-			name:  RcvTClassOpt,
-			tests: v6PacketFlows[:],
-		},
-	}
-	for _, testCase := range testCases {
-		for _, flow := range testCase.tests {
-			t.Run(fmt.Sprintf("%s:flow:%s", testCase.name, flow), func(t *testing.T) {
-				c := context.New(t, []stack.TransportProtocolFactory{udp.NewProtocol, icmp.NewProtocol6, icmp.NewProtocol4})
-				defer c.Cleanup()
-
-				c.CreateEndpointForFlow(flow, udp.ProtocolNumber)
-				name := testCase.name
-
-				if flow.IsMulticast() {
-					netProto := flow.NetProto()
-					addr := flow.GetMulticastAddr()
-					if err := c.Stack.JoinGroup(netProto, context.NICID, addr); err != nil {
-						c.T.Fatalf("JoinGroup(%d, %d, %s): %s", netProto, context.NICID, addr, err)
+					c.CreateEndpointForFlow(flow, udp.ProtocolNumber)
+					if err := c.EP.Bind(tcpip.FullAddress{Port: context.StackPort}); err != nil {
+						c.T.Fatalf("Bind failed: %s", err)
 					}
-				}
+					if flow.IsMulticast() {
+						netProto := flow.NetProto()
+						addr := flow.GetMulticastAddr()
+						if err := c.Stack.JoinGroup(netProto, context.NICID, addr); err != nil {
+							c.T.Fatalf("JoinGroup(%d, %d, %s): %s", netProto, context.NICID, addr, err)
+						}
+					}
 
-				var optionGetter func() bool
-				var optionSetter func(bool)
-				switch name {
-				case RcvTOSOpt:
-					optionGetter = c.EP.SocketOptions().GetReceiveTOS
-					optionSetter = c.EP.SocketOptions().SetReceiveTOS
-				case RcvTClassOpt:
-					optionGetter = c.EP.SocketOptions().GetReceiveTClass
-					optionSetter = c.EP.SocketOptions().SetReceiveTClass
-				default:
-					t.Fatalf("unkown test variant: %s", name)
-				}
+					payload := newRandomPayload(arbitraryPayloadSize)
+					buf := context.BuildUDPPacket(payload, flow, context.Incoming, testTOS, testTTL, false)
 
-				// Verify that setting and reading the option works.
-				v := optionGetter()
-				// Test for expected default value.
-				if v != false {
-					c.T.Errorf("got GetSockOptBool(%s) = %t, want = %t", name, v, false)
-				}
+					if test.getReceiveOption(c.EP) {
+						t.Fatal("got getReceiveOption() = true, want = false")
+					}
 
-				const want = true
-				optionSetter(want)
+					test.setReceiveOption(c.EP, true)
+					if !test.getReceiveOption(c.EP) {
+						t.Fatal("got getReceiveOption() = false, want = true")
+					}
 
-				got := optionGetter()
-				if got != want {
-					c.T.Errorf("got GetSockOptBool(%s) = %t, want = %t", name, got, want)
-				}
-
-				// Verify that the correct received TOS or TClass is handed through as
-				// ancillary data to the ControlMessages struct.
-				if err := c.EP.Bind(tcpip.FullAddress{Port: context.StackPort}); err != nil {
-					c.T.Fatalf("Bind failed: %s", err)
-				}
-				switch name {
-				case RcvTClassOpt:
-					testRead(c, flow, checker.ReceiveTClass(testTOS))
-				case RcvTOSOpt:
-					testRead(c, flow, checker.ReceiveTOS(testTOS))
-				default:
-					t.Fatalf("unknown test variant: %s", name)
-				}
-			})
-		}
+					c.InjectPacket(flow.NetProto(), buf)
+					if flow.NetProto() == test.optionProtocol {
+						c.ReadFromEndpointExpectSuccess(payload, flow, test.presenceChecker)
+					} else {
+						c.ReadFromEndpointExpectSuccess(payload, flow, test.absenceChecker)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -1518,7 +1352,7 @@ func TestV4UnknownDestination(t *testing.T) {
 				payloadSize += header.IPv4MinimumProcessableDatagramSize
 			}
 			payload := newRandomPayload(payloadSize)
-			c.InjectPacket(tc.flow.NetProto(), buildPacket(payload, tc.flow, context.Incoming, tc.badChecksum))
+			c.InjectPacket(tc.flow.NetProto(), context.BuildUDPPacket(payload, tc.flow, context.Incoming, testTOS, testTTL, tc.badChecksum))
 			if tc.badChecksum {
 				checksumErrors++
 				if got, want := c.Stack.Stats().UDP.ChecksumErrors.Value(), checksumErrors; got != want {
@@ -1612,7 +1446,7 @@ func TestV6UnknownDestination(t *testing.T) {
 				payloadSize += header.IPv6MinimumMTU
 			}
 			payload := newRandomPayload(payloadSize)
-			c.InjectPacket(tc.flow.NetProto(), buildPacket(payload, tc.flow, context.Incoming, tc.badChecksum))
+			c.InjectPacket(tc.flow.NetProto(), context.BuildUDPPacket(payload, tc.flow, context.Incoming, testTOS, testTTL, tc.badChecksum))
 			if tc.badChecksum {
 				checksumErrors++
 				if got, want := c.Stack.Stats().UDP.ChecksumErrors.Value(), checksumErrors; got != want {
@@ -1678,7 +1512,7 @@ func TestIncrementMalformedPacketsReceived(t *testing.T) {
 
 	payload := newRandomPayload(arbitraryPayloadSize)
 	h := context.UnicastV6.MakeHeader4Tuple(context.Incoming)
-	buf := buildV6Packet(payload, h, false)
+	buf := context.BuildV6UDPPacket(payload, h, testTOS, testTTL, false)
 
 	// Invalidate the UDP header length field.
 	u := header.UDP(buf[header.IPv6MinimumSize:])
@@ -1717,7 +1551,7 @@ func TestShortHeader(t *testing.T) {
 		TrafficClass:      testTOS,
 		PayloadLength:     uint16(udpSize),
 		TransportProtocol: udp.ProtocolNumber,
-		HopLimit:          65,
+		HopLimit:          testTTL,
 		SrcAddr:           h.Src.Addr,
 		DstAddr:           h.Dst.Addr,
 	})
@@ -1757,7 +1591,7 @@ func TestBadChecksumErrors(t *testing.T) {
 				c.T.Fatalf("Bind failed: %s", err)
 			}
 
-			c.InjectPacket(flow.NetProto(), buildPacket(newRandomPayload(arbitraryPayloadSize), flow, context.Incoming, true))
+			c.InjectPacket(flow.NetProto(), context.BuildUDPPacket(newRandomPayload(arbitraryPayloadSize), flow, context.Incoming, testTOS, testTTL, true))
 
 			const want = 1
 			if got := c.Stack.Stats().UDP.ChecksumErrors.Value(); got != want {
@@ -1784,7 +1618,7 @@ func TestPayloadModifiedV4(t *testing.T) {
 
 	payload := newRandomPayload(arbitraryPayloadSize)
 	h := context.UnicastV4.MakeHeader4Tuple(context.Incoming)
-	buf := buildV4Packet(payload, h, false)
+	buf := context.BuildV4UDPPacket(payload, h, testTOS, testTTL, false)
 	// Modify the payload so that the checksum value in the UDP header will be
 	// incorrect.
 	buf[len(buf)-1]++
@@ -1813,7 +1647,7 @@ func TestPayloadModifiedV6(t *testing.T) {
 
 	payload := newRandomPayload(arbitraryPayloadSize)
 	h := context.UnicastV6.MakeHeader4Tuple(context.Incoming)
-	buf := buildV6Packet(payload, h, false)
+	buf := context.BuildV6UDPPacket(payload, h, testTOS, testTTL, false)
 	// Modify the payload so that the checksum value in the UDP header will be
 	// incorrect.
 	buf[len(buf)-1]++
@@ -1842,7 +1676,7 @@ func TestChecksumZeroV4(t *testing.T) {
 
 	payload := newRandomPayload(arbitraryPayloadSize)
 	h := context.UnicastV4.MakeHeader4Tuple(context.Incoming)
-	buf := buildV4Packet(payload, h, false)
+	buf := context.BuildV4UDPPacket(payload, h, testTOS, testTTL, false)
 	// Set the checksum field in the UDP header to zero.
 	u := header.UDP(buf[header.IPv4MinimumSize:])
 	u.SetChecksum(0)
@@ -1871,7 +1705,7 @@ func TestChecksumZeroV6(t *testing.T) {
 
 	payload := newRandomPayload(arbitraryPayloadSize)
 	h := context.UnicastV6.MakeHeader4Tuple(context.Incoming)
-	buf := buildV6Packet(payload, h, false)
+	buf := context.BuildV6UDPPacket(payload, h, testTOS, testTTL, false)
 	// Set the checksum field in the UDP header to zero.
 	u := header.UDP(buf[header.IPv6MinimumSize:])
 	u.SetChecksum(0)
