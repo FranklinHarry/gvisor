@@ -47,7 +47,6 @@ const (
 )
 
 type packetInfo struct {
-	Raddr    tcpip.LinkAddress
 	Proto    tcpip.NetworkProtocolNumber
 	Contents *stack.PacketBuffer
 }
@@ -134,12 +133,12 @@ func (c *context) cleanup() {
 	}
 }
 
-func (c *context) DeliverNetworkPacket(remote tcpip.LinkAddress, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	c.ch <- packetInfo{remote, protocol, pkt}
+func (c *context) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+	c.ch <- packetInfo{protocol, pkt}
 }
 
-func (c *context) DeliverOutboundPacket(remote tcpip.LinkAddress, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	panic("unimplemented")
+func (c *context) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer, bool) {
+	c.t.Fatal("DeliverLinkPacket not implemented")
 }
 
 func TestNoEthernetProperties(t *testing.T) {
@@ -187,6 +186,7 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32, hash u
 	defer c.cleanup()
 
 	var r stack.RouteInfo
+	r.LocalLinkAddress = laddr
 	r.RemoteLinkAddress = raddr
 
 	// Build payload.
@@ -226,6 +226,9 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32, hash u
 			L3HdrLen:   l3HdrLen,
 		}
 	}
+
+	c.ep.AddHeader(pkt)
+
 	var pkts stack.PacketBufferList
 	pkts.PushBack(pkt)
 	if _, err := c.ep.WritePackets(pkts); err != nil {
@@ -348,6 +351,8 @@ func TestPreserveSrcAddress(t *testing.T) {
 	// See nic.writePacket.
 	pkt.NetworkProtocolNumber = proto
 	pkt.EgressRoute = r
+	c.ep.AddHeader(pkt)
+
 	var pkts stack.PacketBufferList
 	pkts.PushBack(pkt)
 	if _, err := c.ep.WritePackets(pkts); err != nil {
@@ -410,13 +415,11 @@ func TestDeliverPacket(t *testing.T) {
 				select {
 				case pi := <-c.ch:
 					want := packetInfo{
-						Raddr:    raddr,
 						Proto:    proto,
 						Contents: wantPkt,
 					}
 					if !eth {
 						want.Proto = header.IPv4ProtocolNumber
-						want.Raddr = ""
 					}
 					checkPacketInfoEqual(t, pi, want)
 				case <-time.After(10 * time.Second):
@@ -569,12 +572,12 @@ type fakeNetworkDispatcher struct {
 	pkts []*stack.PacketBuffer
 }
 
-func (d *fakeNetworkDispatcher) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (d *fakeNetworkDispatcher) DeliverNetworkPacket(_ tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
 	d.pkts = append(d.pkts, pkt)
 }
 
-func (d *fakeNetworkDispatcher) DeliverOutboundPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	panic("unimplemented")
+func (*fakeNetworkDispatcher) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer, bool) {
+	panic("not implemented")
 }
 
 func TestDispatchPacketFormat(t *testing.T) {

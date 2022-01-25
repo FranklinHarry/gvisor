@@ -24,6 +24,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
+	"gvisor.dev/gvisor/pkg/tcpip/link/packetsocket"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
@@ -150,7 +151,7 @@ func attachOrCreateNIC(s *stack.Stack, name, prefix string, linkCaps stack.LinkE
 		if endpoint.name == "" {
 			endpoint.name = fmt.Sprintf("%s%d", prefix, id)
 		}
-		err := s.CreateNICWithOptions(endpoint.nicID, endpoint, stack.NICOptions{
+		err := s.CreateNICWithOptions(endpoint.nicID, packetsocket.New(endpoint), stack.NICOptions{
 			Name: endpoint.name,
 		})
 		switch err.(type) {
@@ -219,22 +220,13 @@ func (d *Device) Write(data []byte) (int64, error) {
 		}
 	}
 
-	// Try to determine remote link address, default zero.
-	var remote tcpip.LinkAddress
-	switch {
-	case ethHdr != nil:
-		remote = ethHdr.SourceAddress()
-	default:
-		remote = tcpip.LinkAddress(zeroMAC[:])
-	}
-
 	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		ReserveHeaderBytes: len(ethHdr),
 		Data:               buffer.View(data).ToVectorisedView(),
 	})
 	defer pkt.DecRef()
 	copy(pkt.LinkHeader().Push(len(ethHdr)), ethHdr)
-	endpoint.InjectLinkAddr(protocol, remote, pkt)
+	endpoint.InjectInbound(protocol, pkt)
 	return dataLen, nil
 }
 
@@ -275,20 +267,7 @@ func (d *Device) encodePkt(pkt *stack.PacketBuffer) (buffer.View, bool) {
 		vv.AppendView(buffer.View(hdr))
 	}
 
-	// Ethernet header (TAP only).
-	if d.flags.TAP {
-		// Add ethernet header if not provided.
-		if pkt.LinkHeader().View().IsEmpty() {
-			d.endpoint.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
-		}
-		vv.AppendView(pkt.LinkHeader().View())
-	}
-
-	// Append upper headers.
-	vv.AppendView(pkt.NetworkHeader().View())
-	vv.AppendView(pkt.TransportHeader().View())
-	// Append data payload.
-	vv.Append(pkt.Data().ExtractVV())
+	vv.AppendViews(pkt.Views())
 
 	return vv.ToView(), true
 }
@@ -359,21 +338,16 @@ func (e *tunEndpoint) ARPHardwareType() header.ARPHardwareType {
 }
 
 // AddHeader implements stack.LinkEndpoint.AddHeader.
-func (e *tunEndpoint) AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (e *tunEndpoint) AddHeader(pkt *stack.PacketBuffer) {
 	if !e.isTap {
 		return
 	}
 	eth := header.Ethernet(pkt.LinkHeader().Push(header.EthernetMinimumSize))
-	hdr := &header.EthernetFields{
-		SrcAddr: local,
-		DstAddr: remote,
-		Type:    protocol,
-	}
-	if hdr.SrcAddr == "" {
-		hdr.SrcAddr = e.LinkAddress()
-	}
-
-	eth.Encode(hdr)
+	eth.Encode(&header.EthernetFields{
+		SrcAddr: pkt.EgressRoute.LocalLinkAddress,
+		DstAddr: pkt.EgressRoute.RemoteLinkAddress,
+		Type:    pkt.NetworkProtocolNumber,
+	})
 }
 
 // MaxHeaderLength returns the maximum size of the link layer header.

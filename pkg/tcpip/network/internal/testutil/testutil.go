@@ -88,13 +88,7 @@ func (*MockLinkEndpoint) Wait() {}
 func (*MockLinkEndpoint) ARPHardwareType() header.ARPHardwareType { return header.ARPHardwareNone }
 
 // AddHeader implements LinkEndpoint.AddHeader.
-func (*MockLinkEndpoint) AddHeader(_, _ tcpip.LinkAddress, _ tcpip.NetworkProtocolNumber, _ *stack.PacketBuffer) {
-}
-
-// WriteRawPacket implements stack.LinkEndpoint.
-func (*MockLinkEndpoint) WriteRawPacket(*stack.PacketBuffer) tcpip.Error {
-	return &tcpip.ErrNotSupported{}
-}
+func (*MockLinkEndpoint) AddHeader(*stack.PacketBuffer) {}
 
 // MakeRandPkt generates a randomized packet. transportHeaderLength indicates
 // how many random bytes will be copied in the Transport Header.

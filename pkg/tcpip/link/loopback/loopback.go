@@ -78,7 +78,7 @@ func (*endpoint) Wait() {}
 func (e *endpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
 	n := 0
 	for p := pkts.Front(); p != nil; p = p.Next() {
-		if err := e.WriteRawPacket(p); err != nil {
+		if err := e.writePacket(p); err != nil {
 			return n, err
 		}
 		n++
@@ -91,11 +91,10 @@ func (*endpoint) ARPHardwareType() header.ARPHardwareType {
 	return header.ARPHardwareLoopback
 }
 
-func (e *endpoint) AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (*endpoint) AddHeader(*stack.PacketBuffer) {
 }
 
-// WriteRawPacket implements stack.LinkEndpoint.
-func (e *endpoint) WriteRawPacket(pkt *stack.PacketBuffer) tcpip.Error {
+func (e *endpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 	// Construct data as the unparsed portion for the loopback packet.
 	data := buffer.NewVectorisedView(pkt.Size(), pkt.Views())
 
@@ -106,7 +105,7 @@ func (e *endpoint) WriteRawPacket(pkt *stack.PacketBuffer) tcpip.Error {
 		Data: data,
 	})
 	defer newPkt.DecRef()
-	e.dispatcher.DeliverNetworkPacket("" /* remote */, "" /* local */, pkt.NetworkProtocolNumber, newPkt)
+	e.dispatcher.DeliverNetworkPacket(pkt.NetworkProtocolNumber, newPkt)
 
 	return nil
 }

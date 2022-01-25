@@ -1,4 +1,4 @@
-// Copyright 2018 The gVisor Authors.
+// Copyright 2018 The gVisor Authors.T
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -156,7 +156,7 @@ type PacketEndpoint interface {
 	// should construct its own ethernet header for applications.
 	//
 	// HandlePacket may modify pkt.
-	HandlePacket(nicID tcpip.NICID, addr tcpip.LinkAddress, netProto tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
+	HandlePacket(nicID tcpip.NICID, netProto tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
 }
 
 // UnknownDestinationPacketDisposition enumerates the possible return values from
@@ -730,12 +730,18 @@ type NetworkDispatcher interface {
 	// DeliverNetworkPacket finds the appropriate network protocol endpoint
 	// and hands the packet over for further processing.
 	//
-	// pkt.LinkHeader may or may not be set before calling
-	// DeliverNetworkPacket. Some packets do not have link headers (e.g.
-	// packets sent via loopback), and won't have the field set.
+	//
+	// If the link-layer has a header, the packet's link header must be populated.
 	//
 	// DeliverNetworkPacket may modify pkt.
-	DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
+	DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
+
+	// DeliverLinkPacket delivers a packet that was just arrived at an interface
+	// or about to be sent through an interface, to any interested packet
+	// endpoints.
+	//
+	// If the link-layer has a header, the packet's link header must be populated.
+	DeliverLinkPacket(protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer, incoming bool)
 }
 
 // LinkEndpointCapabilities is the type associated with the capabilities
@@ -769,18 +775,6 @@ type LinkWriter interface {
 	// WritePackets may modify the packet buffers, and takes ownership of the PacketBufferList.
 	// it is not safe to use the PacketBufferList after a call to WritePackets.
 	WritePackets(PacketBufferList) (int, tcpip.Error)
-}
-
-// LinkRawWriter is an interface that must be implemented by all Link endpoints
-// to support emitting pre-formed packets which include the Link header.
-type LinkRawWriter interface {
-	// WriteRawPacket writes a packet directly to the link.
-	//
-	// If the link-layer has its own header, the payload must already include the
-	// header.
-	//
-	// WriteRawPacket may modify the packet.
-	WriteRawPacket(*PacketBuffer) tcpip.Error
 }
 
 // NetworkLinkEndpoint is a data-link layer that supports sending network
@@ -832,8 +826,8 @@ type NetworkLinkEndpoint interface {
 	// https://github.com/torvalds/linux/blob/aa0c9086b40c17a7ad94425b3b70dd1fdd7497bf/include/uapi/linux/if_arp.h#L30
 	ARPHardwareType() header.ARPHardwareType
 
-	// AddHeader adds a link layer header to pkt if required.
-	AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
+	// AddHeader adds a link layer header to the packet if required.
+	AddHeader(*PacketBuffer)
 }
 
 // QueueingDiscipline provides a queueing strategy for outgoing packets (e.g
@@ -860,7 +854,6 @@ type QueueingDiscipline interface {
 type LinkEndpoint interface {
 	NetworkLinkEndpoint
 	LinkWriter
-	LinkRawWriter
 }
 
 // InjectableLinkEndpoint is a LinkEndpoint where inbound packets are

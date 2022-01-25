@@ -1,4 +1,4 @@
-// Copyright 2018 The gVisor Authors.
+// Copyright 2018 The gVisor Authors.T
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -85,8 +85,7 @@ type nic struct {
 	// +checklocks:packetEPsMu
 	packetEPs map[tcpip.NetworkProtocolNumber]*packetEndpointList
 
-	qDisc     QueueingDiscipline
-	rawLinkEP LinkRawWriter
+	qDisc QueueingDiscipline
 }
 
 // makeNICStats initializes the NIC statistics and associates them to the global
@@ -182,7 +181,6 @@ func newNIC(stack *Stack, id tcpip.NICID, ep LinkEndpoint, opts NICOptions) *nic
 		linkAddrResolvers:         make(map[tcpip.NetworkProtocolNumber]*linkResolver),
 		duplicateAddressDetectors: make(map[tcpip.NetworkProtocolNumber]DuplicateAddressDetector),
 		qDisc:                     qDisc,
-		rawLinkEP:                 ep,
 	}
 	nic.linkResQueue.init(nic)
 
@@ -343,11 +341,6 @@ func (n *nic) IsLoopback() bool {
 	return n.NetworkLinkEndpoint.Capabilities()&CapabilityLoopback != 0
 }
 
-// WriteRawPacket implements LinkRawWriter.
-func (n *nic) WriteRawPacket(pkt *PacketBuffer) tcpip.Error {
-	return n.rawLinkEP.WriteRawPacket(pkt)
-}
-
 // WritePacket implements NetworkEndpoint.
 func (n *nic) WritePacket(r *Route, pkt *PacketBuffer) tcpip.Error {
 	routeInfo, _, err := r.resolvedFields(nil)
@@ -381,16 +374,24 @@ func (n *nic) WritePacket(r *Route, pkt *PacketBuffer) tcpip.Error {
 
 // WritePacketToRemote implements NetworkInterface.
 func (n *nic) WritePacketToRemote(remoteLinkAddr tcpip.LinkAddress, pkt *PacketBuffer) tcpip.Error {
-	pkt.EgressRoute = RouteInfo{routeInfo: routeInfo{NetProto: pkt.NetworkProtocolNumber}, RemoteLinkAddress: remoteLinkAddr}
+	pkt.EgressRoute = RouteInfo{
+		routeInfo: routeInfo{
+			NetProto:         pkt.NetworkProtocolNumber,
+			LocalLinkAddress: n.LinkAddress(),
+		},
+		RemoteLinkAddress: remoteLinkAddr,
+	}
 	return n.writePacket(pkt)
 }
 
 func (n *nic) writePacket(pkt *PacketBuffer) tcpip.Error {
+	n.NetworkLinkEndpoint.AddHeader(pkt)
+	return n.writeRawPacket(pkt)
+}
+
+func (n *nic) writeRawPacket(pkt *PacketBuffer) tcpip.Error {
 	// WritePacket modifies pkt, calculate numBytes first.
 	numBytes := pkt.Size()
-
-	n.deliverOutboundPacket(pkt.EgressRoute.RemoteLinkAddress, pkt)
-
 	if err := n.qDisc.WritePacket(pkt); err != nil {
 		return err
 	}
@@ -702,7 +703,7 @@ func (n *nic) isInGroup(addr tcpip.Address) bool {
 // Note that the ownership of the slice backing vv is retained by the caller.
 // This rule applies only to the slice itself, not to the items of the slice;
 // the ownership of the items is not retained by the caller.
-func (n *nic) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer) {
+func (n *nic) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer) {
 	enabled := n.Enabled()
 	// If the NIC is not yet enabled, don't receive any packets.
 	if !enabled {
@@ -720,13 +721,12 @@ func (n *nic) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcp
 		return
 	}
 
-	// If no local link layer address is provided, assume it was sent
-	// directly to this NIC.
-	if local == "" {
-		local = n.NetworkLinkEndpoint.LinkAddress()
-	}
 	pkt.RXTransportChecksumValidated = n.NetworkLinkEndpoint.Capabilities()&CapabilityRXChecksumOffload != 0
 
+	networkEndpoint.HandlePacket(pkt)
+}
+
+func (n *nic) DeliverLinkPacket(protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer, incoming bool) {
 	// Deliver to interested packet endpoints without holding NIC lock.
 	var packetEPPkt *PacketBuffer
 	defer func() {
@@ -752,12 +752,17 @@ func (n *nic) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcp
 			// populate it in the packet buffer we provide to packet endpoints as
 			// packet endpoints inspect link headers.
 			packetEPPkt.LinkHeader().Consume(pkt.LinkHeader().View().Size())
-			packetEPPkt.PktType = tcpip.PacketHost
+
+			if incoming {
+				packetEPPkt.PktType = tcpip.PacketHost
+			} else {
+				packetEPPkt.PktType = tcpip.PacketOutgoing
+			}
 		}
 
 		clone := packetEPPkt.Clone()
 		defer clone.DecRef()
-		ep.HandlePacket(n.id, local, protocol, clone)
+		ep.HandlePacket(n.id, protocol, clone)
 	}
 
 	n.packetEPsMu.Lock()
@@ -767,61 +772,13 @@ func (n *nic) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcp
 	anyEPs, anyEPsOK := n.packetEPs[header.EthernetProtocolAll]
 	n.packetEPsMu.Unlock()
 
-	if protoEPsOK {
+	// On Linux, only ETH_P_ALL endpoints get outbound packets.
+	if incoming && protoEPsOK {
 		protoEPs.forEach(deliverPacketEPs)
 	}
 	if anyEPsOK {
 		anyEPs.forEach(deliverPacketEPs)
 	}
-
-	networkEndpoint.HandlePacket(pkt)
-}
-
-// deliverOutboundPacket delivers outgoing packets to interested endpoints.
-func (n *nic) deliverOutboundPacket(remote tcpip.LinkAddress, pkt *PacketBuffer) {
-	n.packetEPsMu.RLock()
-	defer n.packetEPsMu.RUnlock()
-	// We do not deliver to protocol specific packet endpoints as on Linux
-	// only ETH_P_ALL endpoints get outbound packets.
-	// Add any other packet sockets that maybe listening for all protocols.
-	eps, ok := n.packetEPs[header.EthernetProtocolAll]
-	if !ok {
-		return
-	}
-
-	local := n.LinkAddress()
-
-	var packetEPPkt *PacketBuffer
-	defer func() {
-		if packetEPPkt != nil {
-			packetEPPkt.DecRef()
-		}
-	}()
-	eps.forEach(func(ep PacketEndpoint) {
-		if packetEPPkt == nil {
-			// Packet endpoints hold the full packet.
-			//
-			// We perform a deep copy because higher-level endpoints may point to
-			// the middle of a view that is held by a packet endpoint. Save/Restore
-			// does not support overlapping slices and will panic in this case.
-			//
-			// TODO(https://gvisor.dev/issue/6517): Avoid this copy once S/R supports
-			// overlapping slices (e.g. by passing a shallow copy of pkt to the packet
-			// endpoint).
-			packetEPPkt = NewPacketBuffer(PacketBufferOptions{
-				ReserveHeaderBytes: pkt.AvailableHeaderBytes(),
-				Data:               PayloadSince(pkt.NetworkHeader()).ToVectorisedView(),
-			})
-			// Add the link layer header as outgoing packets are intercepted before
-			// the link layer header is created and packet endpoints are interested
-			// in the link header.
-			n.NetworkLinkEndpoint.AddHeader(local, remote, pkt.NetworkProtocolNumber, packetEPPkt)
-			packetEPPkt.PktType = tcpip.PacketOutgoing
-		}
-		clone := packetEPPkt.Clone()
-		defer clone.DecRef()
-		ep.HandlePacket(n.id, local, pkt.NetworkProtocolNumber, clone)
-	})
 }
 
 // DeliverTransportPacket delivers the packets to the appropriate transport

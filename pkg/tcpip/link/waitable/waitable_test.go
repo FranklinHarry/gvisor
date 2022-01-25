@@ -40,12 +40,12 @@ type countedEndpoint struct {
 	dispatcher stack.NetworkDispatcher
 }
 
-func (e *countedEndpoint) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (e *countedEndpoint) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
 	e.dispatchCount++
 }
 
-func (e *countedEndpoint) DeliverOutboundPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	panic("unimplemented")
+func (*countedEndpoint) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer, bool) {
+	panic("not implemented")
 }
 
 func (e *countedEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
@@ -80,11 +80,6 @@ func (e *countedEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.
 	return pkts.Len(), nil
 }
 
-// WriteRawPacket implements stack.LinkEndpoint.
-func (*countedEndpoint) WriteRawPacket(*stack.PacketBuffer) tcpip.Error {
-	return &tcpip.ErrNotSupported{}
-}
-
 // ARPHardwareType implements stack.LinkEndpoint.ARPHardwareType.
 func (*countedEndpoint) ARPHardwareType() header.ARPHardwareType {
 	panic("unimplemented")
@@ -94,7 +89,7 @@ func (*countedEndpoint) ARPHardwareType() header.ARPHardwareType {
 func (*countedEndpoint) Wait() {}
 
 // AddHeader implements stack.LinkEndpoint.AddHeader.
-func (e *countedEndpoint) AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (*countedEndpoint) AddHeader(*stack.PacketBuffer) {
 	panic("unimplemented")
 }
 
@@ -161,7 +156,7 @@ func TestWaitDispatch(t *testing.T) {
 	// Dispatch and check that it goes through.
 	{
 		p := stack.NewPacketBuffer(stack.PacketBufferOptions{})
-		ep.dispatcher.DeliverNetworkPacket("", "", 0, p)
+		ep.dispatcher.DeliverNetworkPacket(0, p)
 		if want := 1; ep.dispatchCount != want {
 			t.Fatalf("Unexpected dispatchCount: got=%v, want=%v", ep.dispatchCount, want)
 		}
@@ -172,7 +167,7 @@ func TestWaitDispatch(t *testing.T) {
 	{
 		wep.WaitWrite()
 		p := stack.NewPacketBuffer(stack.PacketBufferOptions{})
-		ep.dispatcher.DeliverNetworkPacket("", "", 0, p)
+		ep.dispatcher.DeliverNetworkPacket(0, p)
 		if want := 2; ep.dispatchCount != want {
 			t.Fatalf("Unexpected dispatchCount: got=%v, want=%v", ep.dispatchCount, want)
 		}
@@ -183,7 +178,7 @@ func TestWaitDispatch(t *testing.T) {
 	{
 		wep.WaitDispatch()
 		p := stack.NewPacketBuffer(stack.PacketBufferOptions{})
-		ep.dispatcher.DeliverNetworkPacket("", "", 0, p)
+		ep.dispatcher.DeliverNetworkPacket(0, p)
 		if want := 2; ep.dispatchCount != want {
 			t.Fatalf("Unexpected dispatchCount: got=%v, want=%v", ep.dispatchCount, want)
 		}

@@ -35,11 +35,12 @@ type testNetworkDispatcher struct {
 	networkPackets int
 }
 
-func (t *testNetworkDispatcher) DeliverNetworkPacket(_, _ tcpip.LinkAddress, _ tcpip.NetworkProtocolNumber, _ *stack.PacketBuffer) {
+func (t *testNetworkDispatcher) DeliverNetworkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer) {
 	t.networkPackets++
 }
 
-func (*testNetworkDispatcher) DeliverOutboundPacket(_, _ tcpip.LinkAddress, _ tcpip.NetworkProtocolNumber, _ *stack.PacketBuffer) {
+func (*testNetworkDispatcher) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer, bool) {
+	panic("not implemented")
 }
 
 func TestDeliverNetworkPacket(t *testing.T) {
@@ -68,7 +69,7 @@ func TestDeliverNetworkPacket(t *testing.T) {
 	})
 	p := stack.NewPacketBuffer(stack.PacketBufferOptions{Data: eth.ToVectorisedView()})
 	defer p.DecRef()
-	e.DeliverNetworkPacket("", "", 0, p)
+	e.DeliverNetworkPacket(0, p)
 	if networkDispatcher.networkPackets != 1 {
 		t.Fatalf("got networkDispatcher.networkPackets = %d, want = 1", networkDispatcher.networkPackets)
 	}
@@ -120,53 +121,6 @@ func TestMTU(t *testing.T) {
 				t.Errorf("got e.MTU() = %d, want = %d", got, test.expectedMTU)
 			}
 		})
-	}
-}
-
-func TestWritePacketsAddHeader(t *testing.T) {
-	const (
-		localLinkAddr  = tcpip.LinkAddress("\x02\x02\x03\x04\x05\x06")
-		remoteLinkAddr = tcpip.LinkAddress("\x02\x02\x03\x04\x05\x07")
-
-		netProto = 55
-	)
-
-	c := channel.New(1, header.EthernetMinimumSize, localLinkAddr)
-	e := ethernet.New(c)
-
-	{
-		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			ReserveHeaderBytes: int(e.MaxHeaderLength()),
-		})
-		defer pkt.DecRef()
-		pkt.NetworkProtocolNumber = netProto
-		pkt.EgressRoute.RemoteLinkAddress = remoteLinkAddr
-
-		var pkts stack.PacketBufferList
-		pkts.PushFront(pkt)
-		if n, err := e.WritePackets(pkts); err != nil {
-			t.Fatalf("e.WritePackets(_): %s", err)
-		} else if n != 1 {
-			t.Fatalf("got e.WritePackets(_) = %d, want = 1", n)
-		}
-	}
-
-	{
-		pkt := c.Read()
-		if pkt == nil {
-			t.Fatal("expected to read a packet")
-		}
-
-		eth := header.Ethernet(pkt.LinkHeader().View())
-		if got := eth.SourceAddress(); got != localLinkAddr {
-			t.Errorf("got eth.SourceAddress() = %s, want = %s", got, localLinkAddr)
-		}
-		if got := eth.DestinationAddress(); got != remoteLinkAddr {
-			t.Errorf("got eth.DestinationAddress() = %s, want = %s", got, remoteLinkAddr)
-		}
-		if got := eth.Type(); got != netProto {
-			t.Errorf("got eth.Type() = %d, want = %d", got, netProto)
-		}
 	}
 }
 

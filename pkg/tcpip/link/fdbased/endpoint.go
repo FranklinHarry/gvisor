@@ -486,35 +486,21 @@ const (
 )
 
 // AddHeader implements stack.LinkEndpoint.AddHeader.
-func (e *endpoint) AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (e *endpoint) AddHeader(pkt *stack.PacketBuffer) {
 	if e.hdrSize > 0 {
 		// Add ethernet header if needed.
 		eth := header.Ethernet(pkt.LinkHeader().Push(header.EthernetMinimumSize))
-		ethHdr := &header.EthernetFields{
-			DstAddr: remote,
-			Type:    protocol,
-		}
-
-		// Preserve the src address if it's set in the route.
-		if local != "" {
-			ethHdr.SrcAddr = local
-		} else {
-			ethHdr.SrcAddr = e.addr
-		}
-		eth.Encode(ethHdr)
+		eth.Encode(&header.EthernetFields{
+			SrcAddr: pkt.EgressRoute.LocalLinkAddress,
+			DstAddr: pkt.EgressRoute.RemoteLinkAddress,
+			Type:    pkt.NetworkProtocolNumber,
+		})
 	}
 }
 
-// WriteRawPacket implements stack.LinkEndpoint.
-func (*endpoint) WriteRawPacket(*stack.PacketBuffer) tcpip.Error { return &tcpip.ErrNotSupported{} }
-
 // writePacket writes outbound packets to the file descriptor. If it is not
 // currently writable, the packet is dropped.
-func (e *endpoint) writePacket(r stack.RouteInfo, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) tcpip.Error {
-	if e.hdrSize > 0 {
-		e.AddHeader(r.LocalLinkAddress, r.RemoteLinkAddress, protocol, pkt)
-	}
-
+func (e *endpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 	fd := e.fds[pkt.Hash%uint32(len(e.fds))]
 	var vnetHdrBuf []byte
 	if e.gsoKind == stack.HWGSOSupported {
@@ -572,10 +558,6 @@ func (e *endpoint) sendBatch(batchFD int, pkts []*stack.PacketBuffer) (int, tcpi
 		batch := pkts[packets:]
 		syscallHeaderBytes := uintptr(0)
 		for _, pkt := range batch {
-			if e.hdrSize > 0 {
-				e.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
-			}
-
 			var vnetHdrBuf []byte
 			if e.gsoKind == stack.HWGSOSupported {
 				vnetHdr := virtioNetHdr{}
@@ -641,7 +623,7 @@ func (e *endpoint) sendBatch(batchFD int, pkts []*stack.PacketBuffer) (int, tcpi
 			// if necessary (by using e.writevMaxIovs instead of
 			// rawfile.MaxIovs).
 			pkt := batch[0]
-			if err := e.writePacket(pkt.EgressRoute, pkt.NetworkProtocolNumber, pkt); err != nil {
+			if err := e.writePacket(pkt); err != nil {
 				return packets, err
 			}
 			packets++
@@ -764,7 +746,7 @@ func (e *InjectableEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 
 // InjectInbound injects an inbound packet.
 func (e *InjectableEndpoint) InjectInbound(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	e.dispatcher.DeliverNetworkPacket("" /* remote */, "" /* local */, protocol, pkt)
+	e.dispatcher.DeliverNetworkPacket(protocol, pkt)
 }
 
 // NewInjectable creates a new fd-based InjectableEndpoint.
