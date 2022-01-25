@@ -83,6 +83,8 @@ func (*stubLinkEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.E
 
 func (*stubLinkEndpoint) Attach(stack.NetworkDispatcher) {}
 
+func (*stubLinkEndpoint) AddHeader(*stack.PacketBuffer) {}
+
 type stubDispatcher struct {
 	stack.TransportDispatcher
 }
@@ -486,7 +488,7 @@ func routeICMPv6Packet(t *testing.T, clock *faketime.ManualClock, args routeArgs
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Data: buffer.NewVectorisedView(pi.Size(), pi.Views()),
 		})
-		args.dst.InjectLinkAddr(pi.NetworkProtocolNumber, args.dst.LinkAddress(), pkt)
+		args.dst.InjectInbound(pi.NetworkProtocolNumber, pkt)
 	}
 
 	if pi.NetworkProtocolNumber != ProtocolNumber {
@@ -1290,6 +1292,7 @@ func TestLinkAddressRequest(t *testing.T) {
 
 			var want stack.RouteInfo
 			want.NetProto = ProtocolNumber
+			want.LocalLinkAddress = linkAddr0
 			want.RemoteLinkAddress = test.expectedRemoteLinkAddr
 			if diff := cmp.Diff(want, pkt.EgressRoute, cmp.AllowUnexported(want)); diff != "" {
 				t.Errorf("route info mismatch (-want +got):\n%s", diff)
