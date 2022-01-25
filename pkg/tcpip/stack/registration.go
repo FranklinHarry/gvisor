@@ -156,7 +156,7 @@ type PacketEndpoint interface {
 	// should construct its own ethernet header for applications.
 	//
 	// HandlePacket may modify pkt.
-	HandlePacket(nicID tcpip.NICID, addr tcpip.LinkAddress, netProto tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
+	HandlePacket(nicID tcpip.NICID, netProto tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
 }
 
 // UnknownDestinationPacketDisposition enumerates the possible return values from
@@ -735,7 +735,7 @@ type NetworkDispatcher interface {
 	// packets sent via loopback), and won't have the field set.
 	//
 	// DeliverNetworkPacket may modify pkt.
-	DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
+	DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
 }
 
 // LinkEndpointCapabilities is the type associated with the capabilities
@@ -832,8 +832,8 @@ type NetworkLinkEndpoint interface {
 	// https://github.com/torvalds/linux/blob/aa0c9086b40c17a7ad94425b3b70dd1fdd7497bf/include/uapi/linux/if_arp.h#L30
 	ARPHardwareType() header.ARPHardwareType
 
-	// AddHeader adds a link layer header to pkt if required.
-	AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *PacketBuffer)
+	// AddHeader adds a link layer header to the packet if required.
+	AddHeader(*PacketBuffer)
 }
 
 // QueueingDiscipline provides a queueing strategy for outgoing packets (e.g

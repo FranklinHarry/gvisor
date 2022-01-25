@@ -50,12 +50,12 @@ func New(lower stack.LinkEndpoint) *Endpoint {
 // It is called by the link-layer endpoint being wrapped when a packet arrives,
 // and only forwards to the actual dispatcher if Wait or WaitDispatch haven't
 // been called.
-func (e *Endpoint) DeliverNetworkPacket(remote, local tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (e *Endpoint) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
 	if !e.dispatchGate.Enter() {
 		return
 	}
 
-	e.dispatcher.DeliverNetworkPacket(remote, local, protocol, pkt)
+	e.dispatcher.DeliverNetworkPacket(protocol, pkt)
 	e.dispatchGate.Leave()
 }
 
@@ -130,8 +130,8 @@ func (e *Endpoint) ARPHardwareType() header.ARPHardwareType {
 }
 
 // AddHeader implements stack.LinkEndpoint.AddHeader.
-func (e *Endpoint) AddHeader(local, remote tcpip.LinkAddress, protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	e.lower.AddHeader(local, remote, protocol, pkt)
+func (e *Endpoint) AddHeader(pkt *stack.PacketBuffer) {
+	e.lower.AddHeader(pkt)
 }
 
 // WriteRawPacket implements stack.LinkEndpoint.

@@ -59,7 +59,7 @@ func (e *Endpoint) MTU() uint32 {
 }
 
 // DeliverNetworkPacket implements stack.NetworkDispatcher.
-func (e *Endpoint) DeliverNetworkPacket(_, _ tcpip.LinkAddress, _ tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (e *Endpoint) DeliverNetworkPacket(_ tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
 	hdr, ok := pkt.LinkHeader().Consume(header.EthernetMinimumSize)
 	if !ok {
 		return
@@ -67,8 +67,7 @@ func (e *Endpoint) DeliverNetworkPacket(_, _ tcpip.LinkAddress, _ tcpip.NetworkP
 
 	// Note, there is no need to check the destination link address here since
 	// the ethernet hardware filters frames based on their destination addresses.
-	eth := header.Ethernet(hdr)
-	e.Endpoint.DeliverNetworkPacket(eth.SourceAddress() /* remote */, eth.DestinationAddress() /* local */, eth.Type() /* protocol */, pkt)
+	e.Endpoint.DeliverNetworkPacket(header.Ethernet(hdr).Type() /* protocol */, pkt)
 }
 
 // Capabilities implements stack.LinkEndpoint.
@@ -82,12 +81,6 @@ func (e *Endpoint) Capabilities() stack.LinkEndpointCapabilities {
 
 // WritePackets implements stack.LinkEndpoint.
 func (e *Endpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
-	linkAddr := e.LinkAddress()
-
-	for pkt := pkts.Front(); pkt != nil; pkt = pkt.Next() {
-		e.AddHeader(linkAddr, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
-	}
-
 	return e.Endpoint.WritePackets(pkts)
 }
 
@@ -105,12 +98,12 @@ func (e *Endpoint) ARPHardwareType() header.ARPHardwareType {
 }
 
 // AddHeader implements stack.LinkEndpoint.
-func (*Endpoint) AddHeader(local, remote tcpip.LinkAddress, proto tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (*Endpoint) AddHeader(pkt *stack.PacketBuffer) {
 	eth := header.Ethernet(pkt.LinkHeader().Push(header.EthernetMinimumSize))
 	fields := header.EthernetFields{
-		SrcAddr: local,
-		DstAddr: remote,
-		Type:    proto,
+		SrcAddr: pkt.EgressRoute.LocalLinkAddress,
+		DstAddr: pkt.EgressRoute.RemoteLinkAddress,
+		Type:    pkt.NetworkProtocolNumber,
 	}
 	eth.Encode(&fields)
 }
