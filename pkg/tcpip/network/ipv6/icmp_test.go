@@ -83,6 +83,9 @@ func (*stubLinkEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.E
 
 func (*stubLinkEndpoint) Attach(stack.NetworkDispatcher) {}
 
+func (*stubLinkEndpoint) AddHeader(_, _ tcpip.LinkAddress, _ tcpip.NetworkProtocolNumber, _ *stack.PacketBuffer) {
+}
+
 type stubDispatcher struct {
 	stack.TransportDispatcher
 }
@@ -486,7 +489,7 @@ func routeICMPv6Packet(t *testing.T, clock *faketime.ManualClock, args routeArgs
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Data: buffer.NewVectorisedView(pi.Size(), pi.Views()),
 		})
-		args.dst.InjectLinkAddr(pi.NetworkProtocolNumber, args.dst.LinkAddress(), pkt)
+		args.dst.InjectInbound(pi.NetworkProtocolNumber, pkt)
 	}
 
 	if pi.NetworkProtocolNumber != ProtocolNumber {

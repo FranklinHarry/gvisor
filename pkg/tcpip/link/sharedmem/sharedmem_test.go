@@ -80,7 +80,6 @@ func (q *queueBuffers) cleanup() {
 }
 
 type packetInfo struct {
-	addr       tcpip.LinkAddress
 	proto      tcpip.NetworkProtocolNumber
 	data       buffer.View
 	linkHeader buffer.View
@@ -145,20 +144,15 @@ func newTestContext(t *testing.T, mtu, bufferSize uint32, addr tcpip.LinkAddress
 	return c
 }
 
-func (c *testContext) DeliverNetworkPacket(remoteLinkAddr, localLinkAddr tcpip.LinkAddress, proto tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
+func (c *testContext) DeliverNetworkPacket(proto tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
 	c.mu.Lock()
 	c.packets = append(c.packets, packetInfo{
-		addr:  remoteLinkAddr,
 		proto: proto,
 		data:  pkt.Data().AsRange().ToOwnedView(),
 	})
 	c.mu.Unlock()
 
 	c.packetCh <- struct{}{}
-}
-
-func (c *testContext) DeliverOutboundPacket(remoteLinkAddr, localLinkAddr tcpip.LinkAddress, proto tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
-	panic("unimplemented")
 }
 
 func (c *testContext) cleanup() {
@@ -236,6 +230,7 @@ func TestSimpleSend(t *testing.T) {
 			// See nic.writePacket.
 			pkt.EgressRoute = r
 			pkt.NetworkProtocolNumber = proto
+			c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
 			var pkts stack.PacketBufferList
 			pkts.PushBack(pkt)
 			defer pkts.DecRef()
@@ -312,6 +307,7 @@ func TestPreserveSrcAddressInSend(t *testing.T) {
 	// See nic.writePacket.
 	pkt.EgressRoute = r
 	pkt.NetworkProtocolNumber = proto
+	c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
 
 	var pkts stack.PacketBufferList
 	defer pkts.DecRef()
@@ -375,6 +371,7 @@ func TestFillTxQueue(t *testing.T) {
 		})
 		pkt.EgressRoute = r
 		pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+		c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
 
 		var pkts stack.PacketBufferList
 		pkts.PushBack(pkt)
@@ -400,6 +397,7 @@ func TestFillTxQueue(t *testing.T) {
 	})
 	pkt.EgressRoute = r
 	pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+	c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
 
 	var pkts stack.PacketBufferList
 	pkts.PushBack(pkt)
@@ -437,6 +435,7 @@ func TestFillTxQueueAfterBadCompletion(t *testing.T) {
 			pkts.PushBack(pkt)
 			pkt.EgressRoute = r
 			pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+			c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
 		}
 		if _, err := c.ep.WritePackets(pkts); err != nil {
 			t.Fatalf("WritePackets failed unexpectedly: %s", err)
@@ -464,6 +463,8 @@ func TestFillTxQueueAfterBadCompletion(t *testing.T) {
 		})
 		pkt.EgressRoute = r
 		pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+		c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
+
 		var pkts stack.PacketBufferList
 		pkts.PushBack(pkt)
 		if _, err := c.ep.WritePackets(pkts); err != nil {
@@ -487,6 +488,8 @@ func TestFillTxQueueAfterBadCompletion(t *testing.T) {
 	})
 	pkt.EgressRoute = r
 	pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+	c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
+
 	var pkts stack.PacketBufferList
 	pkts.PushBack(pkt)
 	_, err := c.ep.WritePackets(pkts)
@@ -518,6 +521,8 @@ func TestFillTxMemory(t *testing.T) {
 		})
 		pkt.EgressRoute = r
 		pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+		c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
+
 		var pkts stack.PacketBufferList
 		pkts.PushBack(pkt)
 		if _, err := c.ep.WritePackets(pkts); err != nil {
@@ -595,6 +600,8 @@ func TestFillTxMemoryWithMultiBuffer(t *testing.T) {
 		})
 		pkt.EgressRoute = r
 		pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+		c.ep.AddHeader(pkt.EgressRoute.LocalLinkAddress, pkt.EgressRoute.RemoteLinkAddress, pkt.NetworkProtocolNumber, pkt)
+
 		pkts.PushBack(pkt)
 		_, err := c.ep.WritePackets(pkts)
 		if _, ok := err.(*tcpip.ErrWouldBlock); !ok {
